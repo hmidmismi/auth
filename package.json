@@ -8,7 +8,8 @@
     "./client": "./src/client.ts"
   },
   "scripts": {
-    "create-editor": "tsx src/create-editor.ts"
+    "create-editor": "tsx src/create-editor.ts",
+    "lint": "oxlint -c ../../.oxlintrc.json -A no-console ."
   },
   "dependencies": {
     "better-auth": "^1.7.6",
