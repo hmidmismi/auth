@@ -7,13 +7,32 @@ export type AuthConfig = {
   databaseUrl: string;
   /** Signs and encrypts cookies and tokens. At least 32 random characters; keep it a Worker secret. */
   secret: string;
-  /** The app's public origin, e.g. `https://hawkeye.dram3.workers.dev`. It is also the only trusted origin. */
+  /** The app's public origin, e.g. `https://app.example.com`. It is also the only trusted origin. */
   baseUrl: string;
   /** Prefix for the auth cookies, so apps on one domain do not share them. */
   cookiePrefix: string;
   /** Allow `signUpEmail`. Only the account-creation script turns this on; an app serving HTTP never does. */
   allowSignUp?: boolean;
+  /**
+   * Make the cookies work when the app is shown in another site's iframe (the studio's Presentation tool):
+   * `SameSite=None; Secure; Partitioned`. Requires HTTPS, so only turn it on for a deployed app.
+   */
+  crossSiteCookies?: boolean;
+  /**
+   * Let people sign in with GitHub. It only signs in an existing account whose email matches the GitHub account's
+   * verified email; it never creates one. Leave it out to turn GitHub sign-in off.
+   */
+  github?: { clientId: string; clientSecret: string };
+  /** Fewest characters a password may have. Defaults to `DEFAULT_MIN_PASSWORD_LENGTH`. */
+  minPasswordLength?: number;
+  /** Request headers that carry the client's IP address, in order of preference. Defaults to `cf-connecting-ip`. */
+  ipAddressHeaders?: string[];
+  /** Prefix of the four tables, e.g. `auth_` gives `auth_users`. Defaults to `auth_`. Columns are snake_case. */
+  tablePrefix?: string;
 };
+
+/** Fewest characters a password may have unless `minPasswordLength` says otherwise. */
+export const DEFAULT_MIN_PASSWORD_LENGTH = 12;
 
 /** Seven days, in seconds. */
 const SESSION_LIFETIME = 60 * 60 * 24 * 7;
@@ -26,35 +45,44 @@ const TIMESTAMPS = { createdAt: 'created_at', updatedAt: 'updated_at' } as const
  * a connection cannot be shared between requests there, and call `close` when the request is done.
  *
  * Accounts are email and password with no public sign-up: someone with database access creates each account
- * with `pnpm auth:create-editor`. Table and column names follow the repo's snake_case convention and match
- * `packages/db/src/schema/auth`.
+ * with the package's `create-user` script. The tables are `<prefix>users`, `<prefix>sessions`,
+ * `<prefix>accounts` and `<prefix>verifications` with snake_case columns; the app's schema must define them.
  *
- * @param config - the database, secret, origin and cookie prefix.
+ * @param config - the database, secret, origin and cookie prefix, and the optional settings.
  * @returns the auth instance and a function that closes its pool.
  */
 export function createAuth(config: AuthConfig) {
+  const prefix = config.tablePrefix ?? 'auth_';
   const pool = new Pool({ connectionString: config.databaseUrl, max: 1 });
   const auth = betterAuth({
     database: pool,
     secret: config.secret,
     baseURL: config.baseUrl,
     trustedOrigins: [config.baseUrl],
+    ...(config.github && {
+      socialProviders: {
+        github: { ...config.github, disableSignUp: true },
+      },
+    }),
     emailAndPassword: {
       enabled: true,
       disableSignUp: !config.allowSignUp,
       autoSignIn: false,
-      minPasswordLength: 12,
+      minPasswordLength: config.minPasswordLength ?? DEFAULT_MIN_PASSWORD_LENGTH,
     },
     advanced: {
       cookiePrefix: config.cookiePrefix,
-      ipAddress: { ipAddressHeaders: ['cf-connecting-ip'] },
+      ...(config.crossSiteCookies && {
+        defaultCookieAttributes: { sameSite: 'none', secure: true, partitioned: true },
+      }),
+      ipAddress: { ipAddressHeaders: config.ipAddressHeaders ?? ['cf-connecting-ip'] },
     },
     user: {
-      modelName: 'auth_users',
+      modelName: `${prefix}users`,
       fields: { emailVerified: 'email_verified', ...TIMESTAMPS },
     },
     session: {
-      modelName: 'auth_sessions',
+      modelName: `${prefix}sessions`,
       expiresIn: SESSION_LIFETIME,
       fields: {
         userId: 'user_id',
@@ -65,7 +93,8 @@ export function createAuth(config: AuthConfig) {
       },
     },
     account: {
-      modelName: 'auth_accounts',
+      modelName: `${prefix}accounts`,
+      accountLinking: { enabled: true, trustedProviders: config.github ? ['github'] : [] },
       fields: {
         userId: 'user_id',
         accountId: 'account_id',
@@ -79,7 +108,7 @@ export function createAuth(config: AuthConfig) {
       },
     },
     verification: {
-      modelName: 'auth_verifications',
+      modelName: `${prefix}verifications`,
       fields: { expiresAt: 'expires_at', ...TIMESTAMPS },
     },
   });

@@ -2,7 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { createInterface } from 'node:readline/promises';
 import { config } from 'dotenv';
 import { Pool } from 'pg';
-import { createAuth } from './server';
+import { createAuth, DEFAULT_MIN_PASSWORD_LENGTH } from './server';
 
 config({ quiet: true });
 
@@ -48,19 +48,21 @@ function readHidden(prompt: string): Promise<string> {
   });
 }
 
-/** Minimum password length; matches the auth server configuration. */
-const MIN_PASSWORD_LENGTH = 12;
+/** Minimum password length; `MIN_PASSWORD_LENGTH` in the environment, matching the app's auth configuration. */
+const MIN_PASSWORD_LENGTH = Number(process.env.MIN_PASSWORD_LENGTH ?? DEFAULT_MIN_PASSWORD_LENGTH);
 
 /** Local Supabase connection string, used unless `LOCAL_DATABASE_URL` is set. */
 const DEFAULT_LOCAL_URL = 'postgresql://postgres:postgres@127.0.0.1:54322/postgres';
 
-/** The tables copied to the hosted database for one editor, in dependency order, with the column that selects the editor's rows. */
+/** Prefix of the auth tables; `AUTH_TABLE_PREFIX` in the environment, matching the app's auth configuration. */
+const PREFIX = process.env.AUTH_TABLE_PREFIX ?? 'auth_';
+
+/** The tables copied to the hosted database for one user, in dependency order, with the condition that selects the user's rows. */
 const COPIED_TABLES = [
-  { table: 'auth_users', where: 'email = $1', param: 'email' },
+  { table: `${PREFIX}users`, where: 'email = $1' },
   {
-    table: 'auth_accounts',
-    where: 'user_id in (select id from auth_users where email = $1)',
-    param: 'email',
+    table: `${PREFIX}accounts`,
+    where: `user_id in (select id from ${PREFIX}users where email = $1)`,
   },
 ] as const;
 
@@ -114,14 +116,14 @@ function hostedUrl(): string | null {
 }
 
 /**
- * Copies one editor's user and account rows (including the password hash) from the local database to the
+ * Copies one user's user and account rows (including the password hash) from the local database to the
  * hosted one, in a single transaction. Sessions are not copied. Does nothing when the hosted database already
  * has an account with that email.
  *
  * @param localUrl - the local connection string.
  * @param hostedConnection - the hosted connection string.
- * @param email - the editor's email.
- * @returns `true` when rows were copied, `false` when the editor already existed on the hosted database.
+ * @param email - the user's email.
+ * @returns `true` when rows were copied, `false` when the user already existed on the hosted database.
  */
 async function copyToHosted(
   localUrl: string,
@@ -131,7 +133,7 @@ async function copyToHosted(
   const local = new Pool({ connectionString: localUrl, max: 1 });
   const hosted = new Pool({ connectionString: hostedConnection, max: 1 });
   try {
-    const existing = await hosted.query('select 1 from auth_users where email = $1', [email]);
+    const existing = await hosted.query(`select 1 from ${PREFIX}users where email = $1`, [email]);
     if (existing.rowCount) return false;
     const client = await hosted.connect();
     try {
@@ -163,10 +165,10 @@ async function copyToHosted(
 }
 
 /**
- * Interactive script that creates an email-and-password editor in the local database, then copies the editor
+ * Interactive script that creates an email-and-password user in the local database, then copies the user
  * to the hosted database. Asks for email, name and a hidden password, so nothing sensitive reaches shell
  * history. The hosted copy needs `HOSTED_DB` (or `HOSTED_DATABASE_URL`) in the environment; without it only
- * the local account is created. Usage: `pnpm auth:create-editor`.
+ * the local account is created. Usage: `pnpm create-user`.
  *
  * @returns the process exit code.
  */
