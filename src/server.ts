@@ -1,6 +1,16 @@
 import { betterAuth } from 'better-auth';
 import { Pool } from 'pg';
 
+/** Google sign-in settings. */
+export type GoogleConfig = {
+  clientId: string;
+  clientSecret: string;
+  /** Email domains that may sign in, such as `example.com`. */
+  allowedDomains?: string[];
+  /** Individual emails that may sign in. */
+  allowedEmails?: string[];
+};
+
 /** What `createAuth` needs to know about the app it serves. */
 export type AuthConfig = {
   /** PostgreSQL connection string. On Workers, the Hyperdrive binding's connection string. */
@@ -23,6 +33,12 @@ export type AuthConfig = {
    * verified email; it never creates one. Leave it out to turn GitHub sign-in off.
    */
   github?: { clientId: string; clientSecret: string };
+  /**
+   * Let people sign in with Google. With `allowedDomains` or `allowedEmails`, a Google account on the list gets an
+   * account made on first sign-in and everyone else is refused. With neither, it only signs in an existing account
+   * whose email matches the verified Google email.
+   */
+  google?: GoogleConfig;
   /** Fewest characters a password may have. Defaults to `DEFAULT_MIN_PASSWORD_LENGTH`. */
   minPasswordLength?: number;
   /** Request headers that carry the client's IP address, in order of preference. Defaults to `cf-connecting-ip`. */
@@ -33,6 +49,24 @@ export type AuthConfig = {
 
 /** Fewest characters a password may have unless `minPasswordLength` says otherwise. */
 export const DEFAULT_MIN_PASSWORD_LENGTH = 12;
+
+/**
+ * Whether an email is on the allow-list. Case-insensitive; a domain matches the part after the last `@`.
+ *
+ * @param email - the address to check.
+ * @param list - the allowed domains and emails.
+ * @returns true when the email's domain or the whole address is listed.
+ */
+export function isAllowedEmail(
+  email: string,
+  list: { allowedDomains?: string[] | undefined; allowedEmails?: string[] | undefined }
+) {
+  const address = email.trim().toLowerCase();
+  const domain = address.slice(address.lastIndexOf('@') + 1);
+  const domains = (list.allowedDomains ?? []).map((item) => item.trim().toLowerCase());
+  const emails = (list.allowedEmails ?? []).map((item) => item.trim().toLowerCase());
+  return domains.includes(domain) || emails.includes(address);
+}
 
 /** Seven days, in seconds. */
 const SESSION_LIFETIME = 60 * 60 * 24 * 7;
@@ -54,14 +88,35 @@ const TIMESTAMPS = { createdAt: 'created_at', updatedAt: 'updated_at' } as const
 export function createAuth(config: AuthConfig) {
   const prefix = config.tablePrefix ?? 'auth_';
   const pool = new Pool({ connectionString: config.databaseUrl, max: 1 });
+  const google = config.google;
+  const hasAllowList = Boolean(google?.allowedDomains?.length || google?.allowedEmails?.length);
+  const onlyDomain = google?.allowedDomains?.length === 1 && !google.allowedEmails?.length;
   const auth = betterAuth({
     database: pool,
     secret: config.secret,
     baseURL: config.baseUrl,
     trustedOrigins: [config.baseUrl],
-    ...(config.github && {
+    ...((config.github || google) && {
       socialProviders: {
-        github: { ...config.github, disableSignUp: true },
+        ...(config.github && { github: { ...config.github, disableSignUp: true } }),
+        ...(google && {
+          google: {
+            clientId: google.clientId,
+            clientSecret: google.clientSecret,
+            disableSignUp: !hasAllowList,
+            ...(onlyDomain && { hd: google.allowedDomains![0]! }),
+          },
+        }),
+      },
+    }),
+    ...(hasAllowList && {
+      databaseHooks: {
+        user: {
+          create: {
+            /** Refuses to create an account for an email that is not on the Google allow-list. */
+            before: async (user: { email: string }) => isAllowedEmail(user.email, google!),
+          },
+        },
       },
     }),
     emailAndPassword: {
@@ -94,7 +149,7 @@ export function createAuth(config: AuthConfig) {
     },
     account: {
       modelName: `${prefix}accounts`,
-      accountLinking: { enabled: true, trustedProviders: config.github ? ['github'] : [] },
+      accountLinking: { enabled: true, trustedProviders: [...(config.github ? ['github'] : []), ...(google ? ['google'] : [])] },
       fields: {
         userId: 'user_id',
         accountId: 'account_id',

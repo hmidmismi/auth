@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createAuth, DEFAULT_MIN_PASSWORD_LENGTH } from '../src/server';
+import { createAuth, DEFAULT_MIN_PASSWORD_LENGTH, isAllowedEmail } from '../src/server';
 
 const base = {
   databaseUrl: 'postgresql://user:pass@127.0.0.1:1/none',
@@ -72,5 +72,43 @@ describe('createAuth', () => {
       partitioned: true,
     });
     await framed.close();
+  });
+});
+
+describe('Google sign-in', () => {
+  const google = { clientId: 'id', clientSecret: 'secret' };
+
+  it('is off unless configured', async () => {
+    const { options, close } = optionsOf(base);
+    expect(options.socialProviders?.google).toBeUndefined();
+    await close();
+  });
+
+  it('only signs in existing accounts without an allow-list', async () => {
+    const { options, close } = optionsOf({ ...base, google });
+    expect(options.socialProviders?.google?.disableSignUp).toBe(true);
+    expect(options.databaseHooks).toBeUndefined();
+    await close();
+  });
+
+  it('creates accounts for allow-listed emails and restricts the hosted domain', async () => {
+    const { options, close } = optionsOf({
+      ...base,
+      google: { ...google, allowedDomains: ['example.com'] },
+    });
+    expect(options.socialProviders?.google?.disableSignUp).toBe(false);
+    expect(options.socialProviders?.google?.hd).toBe('example.com');
+    expect(options.databaseHooks?.user?.create?.before).toBeTypeOf('function');
+    await close();
+  });
+});
+
+describe('isAllowedEmail', () => {
+  it('matches domains and addresses case-insensitively', () => {
+    const list = { allowedDomains: ['Example.com'], allowedEmails: ['guest@other.org'] };
+    expect(isAllowedEmail('Ann@EXAMPLE.com', list)).toBe(true);
+    expect(isAllowedEmail('guest@other.org', list)).toBe(true);
+    expect(isAllowedEmail('x@other.org', list)).toBe(false);
+    expect(isAllowedEmail('x@evil-example.com', list)).toBe(false);
   });
 });

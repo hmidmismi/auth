@@ -1,6 +1,6 @@
 # @hmidmismi/auth
 
-Better Auth setup for Postgres (email and password, optional GitHub), with a script that creates a user.
+Better Auth setup for Postgres (email and password, optional GitHub and Google with an allow-list), with a script that creates a user.
 
 Path: `packages/auth`. Run from the repo root with `pnpm --filter @hmidmismi/auth <script>`.
 
@@ -13,6 +13,5 @@ Path: `packages/auth`. Run from the repo root with `pnpm --filter @hmidmismi/aut
 
 ## Used by
 
-`@chorusworks/dram`, `@dramonline/hawkeye`
+`@yvml/web`
 
-See `ARCHITECTURE.md` and `TODO.md` in the repo root for where it fits.
